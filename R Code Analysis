@@ -1,13 +1,18 @@
+# Análises TCC da Lilian Otoni
 # Objetivo: Avaliar a série temporal de gordura:proteina em vacas da raça Holandesa
 
-# Carregando pacotes
+
+# Loading packages
+extrafont::loadfonts(device = "win")
+
 require(tidyverse)
 require(tidylog)
 require(DataExplorer)
 require(nlme)
+library(emmeans)
 
 
-# Carregando dados ####
+# Data ####
 
 hol1 <- read.csv(
   "~/complete_lactations.csv",
@@ -28,6 +33,19 @@ hol1$data.parto <- as.Date(hol1$data.parto, format= "%d/%m/%y")
 hol1$datamorte <- as.Date(hol1$datamorte, format= "%d/%m/%y")
 
 
+# Como os valores de produção são o total da lactação, estação e ano da lactação
+# será obtido com base na data quando a lactação terminou
+
+
+hol1$fim.lacta <- hol1$data.parto + hol1$diaslactacao
+
+# O arquivo de dados foi extraído em 6 de Julho de 2017. Dessa forma, lactações que terminaram 
+# após essa data não são confiáveis
+
+hol1 <- hol1 %>% 
+  filter(fim.lacta < "2017-07-06")
+
+
 # Criando variável estação do ano do parto
 get.season <- function(DATES) {
   WS <- as.Date("2016-12-21", format = "%Y-%m-%d") # Summer
@@ -45,9 +63,11 @@ get.season <- function(DATES) {
 
 
 hol1$estacao.parto <- get.season(hol1$data.parto)
+hol1$estacao.fim.lacta <- get.season(hol1$fim.lacta)
 
 # Criando variável ano do parto
 hol1$ano.parto <- lubridate::year(hol1$data.parto)
+hol1$ano.fim.lacta <- lubridate::year(hol1$fim.lacta)
 
 
 # Criando variável idade do parto em meses
@@ -95,12 +115,17 @@ hol2 <- hol1 %>%
 # Dados descritivos iniciais para o Material e Métodos
 hol2 %>% 
   filter(raca == "HOLANDES") %>% 
+  count()
+  
+  
+hol2 %>% 
+  filter(raca == "HOLANDES") %>% 
   summarise(animal = n_distinct(id.animal),
             herd = n_distinct(cliente))
 
 hol2 %>% 
   filter(raca == "HOLANDES") %>% 
-  select(ano.parto) %>% 
+  select(fim.lacta) %>% 
   summary()
 
 
@@ -140,8 +165,9 @@ hol3 <- hol2 %>%
          !is.na(prodprot305dias),
          prodprot305dias !=0) %>% 
   
-  # Getting month of calving
-  mutate(mes.parto = lubridate::month(data.parto)) %>% 
+  # Getting month of calving e mês de fim da lactação
+  mutate(mes.parto = lubridate::month(data.parto),
+         mes.fim.lacta = lubridate::month(fim.lacta)) %>% 
   
   
   
@@ -153,15 +179,15 @@ hol3 <- hol2 %>%
   
   
   # Keeping herds with at least 5 observations for the random effect
-  group_by(cliente, estacao.parto) %>%
+  group_by(cliente) %>%
   mutate(n_obs = n()) %>%
   ungroup() %>% 
-  filter(n_obs >= 5) %>% 
+  filter(n_obs >= 10) %>% 
   
   
-  # Keeping only observations from 2000 to 2016 because the other years do
+  # Keeping only observations from 2001 to 2016 because the other years do
   # not have observations on all months
-  filter(ano.parto %in% c(2000:2016)) %>% 
+  filter(ano.fim.lacta %in% c(2001:2016)) %>% 
   
   # Creating position variable to evaluate correlation structures
   # The position variable defines the indices of the correlation parameters
@@ -170,7 +196,7 @@ hol3 <- hol2 %>%
   # form a sequence of consecutive integers
   # 
   # Cliente is the group (random effect) evaluated in this study
-  arrange(ano.parto, mes.parto, cliente, ordem.parto.ok, data.parto) %>% 
+  arrange(ano.fim.lacta, mes.fim.lacta, cliente, ordem.parto.ok, fim.lacta) %>% 
   group_by(cliente) %>% 
   mutate(timePos = row_number()) %>% 
   ungroup()
@@ -187,13 +213,28 @@ hol3 %>%
             herd = n_distinct(cliente))
 
 hol3 %>% 
-  select(ano.parto) %>% 
+  select(ano.fim.lacta) %>% 
   summary()
+
+
+hol3 %>% 
+  summarise(AVG = mean(ftp),
+            SD = sd(ftp),
+            MIN = min(ftp),
+            MAX = max(ftp)) %>% 
+  round(2)
+
+
 
 
 ggplot(hol3, 
        aes(x = ftp)) +
-  facet_wrap(~ ano.parto,
+  geom_histogram()
+
+
+ggplot(hol3, 
+       aes(x = ftp)) +
+  facet_wrap(~ ano.fim.lacta,
              scales = "free") +
   geom_histogram()
 
@@ -216,25 +257,243 @@ ggplot(hol3 %>%
   geom_boxplot(show.legend = FALSE)
 
 
-hol3 %>% 
-  group_by(ordem.parto.stats, ano.parto, mes.parto) %>% 
-  add_count() %>% 
-  distinct(ano.parto, mes.parto, ordem.parto.stats, n) %>% 
-  arrange(ano.parto, mes.parto, ordem.parto.stats) %>% 
-  View()
-
-# Não tenho observações de todas as lactações terminando em todas as combinações de ano e mês
-# Não vai ser possível colocar essa interação tripla no modelo
-
-
 
 # Modeling ####
 
 options(contrasts = c("contr.sum", "contr.poly"))
-model1 <- lme(ftp ~ diaslactacao + ordem.parto.stats + ano.parto + mes.parto +
-                ordem.parto.stats * ano.parto + ordem.parto.stats * mes.parto +
-                ano.parto * mes.parto,
+model1 <- lme(ftp ~ diaslactacao + ordem.parto.stats + ano.fim.lacta + mes.fim.lacta,
               random = ~ 1|cliente,
               data = hol3 %>%
-                mutate(ano.parto = as.factor(ano.parto),
-                       mes.parto = as.factor(mes.parto)))
+                mutate(ano.fim.lacta = as.factor(ano.fim.lacta),
+                       mes.fim.lacta = as.factor(mes.fim.lacta)))
+
+
+# Testando estruturas de correlação uma vez que as observações foram coletadas ao longo do tempo
+options(contrasts = c("contr.sum", "contr.poly"))
+
+
+model1.ar1cor <- lme(ftp ~ diaslactacao + ordem.parto.stats + ano.fim.lacta + mes.fim.lacta,
+                     random = ~ 1|cliente,
+                     data = hol3 %>%
+                       mutate(ano.fim.lacta = as.factor(ano.fim.lacta),
+                              mes.fim.lacta = as.factor(mes.fim.lacta)),
+                     correlation = corAR1(form = ~ timePos))
+
+
+model1.CompSymcor <- lme(ftp ~ diaslactacao + ordem.parto.stats + ano.fim.lacta + mes.fim.lacta,
+                         random = ~ 1|cliente,
+                         data = hol3 %>%
+                           mutate(ano.fim.lacta = as.factor(ano.fim.lacta),
+                                  mes.fim.lacta = as.factor(mes.fim.lacta)),
+                         correlation = corCompSymm())
+
+
+# Avaliando os modelos
+anova(model1,
+      model1.ar1cor,
+      model1.CompSymcor,
+      test = FALSE)
+
+
+# Modelo com autocorrelação de level 1 foi o melhor
+
+## Análise dos resíduos ####
+
+# Assumption 1: Within-group errors are independent, follow a normal distribution ~ N(0, Ï2), 
+# and are independent of random effects
+
+
+# Errors should be centered at zero in the following plot
+plot(model1.ar1cor, cliente ~ resid(.), abline = 0)
+
+
+# Looking at the variance between fixed effects
+plot(model1.ar1cor, resid(., type = "p") ~ fitted(.) | ordem.parto.stats,
+     id = NULL, adj = -0.3)
+
+plot(model1.ar1cor, resid(., type = "p") ~ fitted(.) | ano.fim.lacta,
+     id = NULL, adj = -0.3)
+
+plot(model1.ar1cor, resid(., type = "p") ~ fitted(.) | mes.fim.lacta,
+     id = NULL, adj = -0.3)
+
+
+# Checking if the residuals follow a normal distribution
+car::qqPlot(resid(model1.ar1cor, type = "pearson"))
+
+
+# Evaluating within-group heteroscedasticity and independence
+plot(model1.ar1cor)
+
+
+# Assumption 2: Random effects are normally distributed ~ N (0, sigma2) and
+# are independent for different groups
+
+car::qqPlot(ranef(model1.ar1cor, level = 1)$"(Intercept)",
+            main = "Rebanho")
+
+# Independence
+plot(ranef(model1.ar1cor, level = 1)$"(Intercept)")
+abline(h = 0,
+       col = "red")
+
+
+# Assumptions were mostly met. There is a little departure from normality, but
+# it should not be a big problem
+
+# Getting significance of the fixed effects
+anova(model1.ar1cor, type = "marginal")
+
+anova(model1.ar1cor, type = "marginal")$"p-value" %>% 
+  round(2)
+
+summary(model1.ar1cor)
+caret::R2(obs = hol3$ftp,
+          pred = predict(model1.ar1cor, hol3 %>%
+                           mutate(ano.fim.lacta = as.factor(ano.fim.lacta),
+                                  mes.fim.lacta = as.factor(mes.fim.lacta)))) %>%
+  round(2)
+
+caret::MAE(obs = hol3$ftp,
+          pred = predict(model1.ar1cor, hol3 %>%
+                           mutate(ano.fim.lacta = as.factor(ano.fim.lacta),
+                                  mes.fim.lacta = as.factor(mes.fim.lacta)))) %>%
+  round(2)
+
+
+## Extraíndo resultados ####
+
+
+# Ano
+# Médias marginais
+emmeans(model1.ar1cor, ~ ano.fim.lacta)
+
+
+# Avaliando tendência
+contrast(emmeans(model1.ar1cor, pairwise ~ ano.fim.lacta)[[1]], 
+         "poly")
+
+
+# Regressão linear usando as médias marginais
+ano.ftp.lm <- lm(emmean ~ ano.fim.lacta,
+                 data = emmeans(model1.ar1cor, ~ ano.fim.lacta) %>% 
+                   as.data.frame() %>% 
+                   mutate(ano.fim.lacta = as.numeric(ano.fim.lacta)))
+
+
+model.res <- data.frame(model = paste("hat(Y) ==", 
+                                      format(round(coef(ano.ftp.lm)[1], digits = 2), nsmall = 2),
+                                      format(round(coef(ano.ftp.lm)[2], digits = 4),nsmall = 4), "~'x'",
+                                      sep = ""),
+                        r2 = paste("italic(R^2) ==", format(round(summary(ano.ftp.lm)$adj.r.squared, 3), digits = 2),
+                                   sep = ""),
+                        p_valor = paste("~' '~", 
+                                        "~italic(P-valor) == ", 
+                                        signif(pf(summary(ano.ftp.lm)$fstatistic[1], 
+                                                  summary(ano.ftp.lm)$fstatistic[2], 
+                                                  summary(ano.ftp.lm)$fstatistic[3], 
+                                                  lower.tail=FALSE),1),
+                                        sep = ""))
+
+
+
+ggplot(emmeans(model1.ar1cor, ~ ano.fim.lacta) %>% 
+         as.data.frame(),
+       aes(x = as.numeric(as.character(ano.fim.lacta)),
+           y = emmean)) +
+  geom_errorbar(aes(ymin = lower.CL,
+                    ymax = upper.CL),
+                width = 0.25, size = 0.25, color = "gray33") +
+  geom_point(size = 2.5, show.legend = FALSE,
+             color = "black") +
+  geom_smooth(method = "lm", se = TRUE,
+              formula =  'y ~ x',
+              size = 0.5) +
+  scale_y_continuous(limits = c(1.06, 1.18),
+                     breaks = seq(1.06, 1.18, 0.02),
+                     expand = expansion(mult = 0, add = 0)) +
+  scale_x_continuous(breaks = seq(2001, 2016, 3)) +
+  theme_classic(base_family = "Times New Roman") +
+  labs(x = "Ano",
+       y = "Relação gordura:proteína") + 
+  geom_text(data = model.res,
+            mapping = aes(x = 2004, y = 1.08,
+                          label = model),
+            family = "Times New Roman",
+            parse = TRUE) +
+  geom_text(data = model.res,
+            mapping = aes(x = 2004, y = 1.07,
+                          label = paste(r2, p_valor)),
+            family = "Times New Roman",
+            parse = TRUE) +
+  theme(axis.text = element_text(size = 10, color = "black"),
+        axis.line = element_line(color = "black"),
+        axis.ticks = element_line(color = "black"),
+        axis.title.x = element_text(size = 10,
+                                    margin = margin(t = 5, # top
+                                                    r = 0, # right 
+                                                    b = 0, # bottom
+                                                    l = 0)),
+        axis.title.y = element_text(size = 10,
+                                    margin = margin(t = 0, # top
+                                                    r = 10, # right 
+                                                    b = 0, # bottom
+                                                    l = 0)))
+
+ggsave(filename = paste(Sys.Date(), "Ano.jpeg", sep = "_"),
+       units = "cm",
+       width = 15,
+       height = 9,
+       dpi = 700)
+
+
+# Paridade
+emmeans(model1.ar1cor, ~ ordem.parto.stats)
+
+contrast(emmeans(model1.ar1cor, pairwise ~ ordem.parto.stats)[[1]], 
+         "poly")
+
+multcomp::cld(emmeans(model1.ar1cor, ~ ordem.parto.stats),
+              alpha = 0.05,
+              Letters = letters,
+              adjust = "tukey")
+
+ggplot(emmeans(model1.ar1cor, ~ ordem.parto.stats) %>% 
+         as.data.frame() %>% 
+         mutate(labels = c("b", "c", "b", rep("a", 3))), 
+       aes(x = ordem.parto.stats,
+           y = emmean)) +
+  geom_errorbar(aes(ymin = lower.CL,
+                    ymax = upper.CL),
+                width = 0.25, size = 0.25, color = "gray33") +
+  geom_point(size = 2.5, show.legend = FALSE,
+             color = "black") +
+  scale_y_continuous(limits = c(1.08, 1.16),
+                     breaks = seq(1.08, 1.16, 0.02),
+                     expand = expansion(mult = 0, add = 0)) +
+  geom_text(aes(label = labels,
+                y = upper.CL),
+            vjust = -1.5, color = "black",
+            family = "Times New Roman", size = 3.3) +
+  theme_classic(base_family = "Times New Roman") +
+  labs(x = "Paridade",
+       y = "Relação gordura:proteína") + 
+  theme(axis.text = element_text(size = 10, color = "black"),
+        axis.line = element_line(color = "black"),
+        axis.ticks = element_line(color = "black"),
+        axis.title.x = element_text(size = 10,
+                                    margin = margin(t = 5, # top
+                                                    r = 0, # right 
+                                                    b = 0, # bottom
+                                                    l = 0)),
+        axis.title.y = element_text(size = 10,
+                                    margin = margin(t = 0, # top
+                                                    r = 10, # right 
+                                                    b = 0, # bottom
+                                                    l = 0)))
+  
+ggsave(filename = paste(Sys.Date(), "Paridade.jpeg", sep = "_"),
+       units = "cm",
+       width = 12,
+       height = 9,
+       dpi = 700)
