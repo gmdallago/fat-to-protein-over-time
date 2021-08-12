@@ -1,0 +1,240 @@
+# Objetivo: Avaliar a série temporal de gordura:proteina em vacas da raça Holandesa
+
+# Carregando pacotes
+require(tidyverse)
+require(tidylog)
+require(DataExplorer)
+require(nlme)
+
+
+# Carregando dados ####
+
+hol1 <- read.csv(
+  "~/complete_lactations.csv",
+  header= T,
+  sep= ";",
+  dec= ",",
+  na.strings = c("NA", "?", "")) %>% 
+  rename("Raca" = "Raça")
+
+names(hol1) <- tolower(names(hol1))
+
+
+# Cleaning ####
+
+# Formatanddo as datas
+hol1$data.nascimento <- as.Date(hol1$data.nascimento, format= "%d/%m/%y")
+hol1$data.parto <- as.Date(hol1$data.parto, format= "%d/%m/%y")
+hol1$datamorte <- as.Date(hol1$datamorte, format= "%d/%m/%y")
+
+
+# Criando variável estação do ano do parto
+get.season <- function(DATES) {
+  WS <- as.Date("2016-12-21", format = "%Y-%m-%d") # Summer
+  SE <- as.Date("2016-3-20",  format = "%Y-%m-%d") # Fall
+  SS <- as.Date("2016-6-20",  format = "%Y-%m-%d") # Winter
+  FE <- as.Date("2016-9-22",  format = "%Y-%m-%d") # Spring
+  
+  # Convert dates from any year to 2016 dates (Leap year)
+  d <- as.Date(strftime(DATES, format="2016-%m-%d"))
+  
+  as.factor(ifelse (d >= WS | d < SE, "Verao",
+                    ifelse (d >= SE & d < SS, "Outono",
+                            ifelse (d >= SS & d < FE, "Inverno", "Primavera"))))
+}
+
+
+hol1$estacao.parto <- get.season(hol1$data.parto)
+
+# Criando variável ano do parto
+hol1$ano.parto <- lubridate::year(hol1$data.parto)
+
+
+# Criando variável idade do parto em meses
+
+# turn a date into a 'monthnumber' relative to an origin
+monnb <- function(d) {
+  lt <- as.POSIXlt(as.Date(d, origin="1900-01-01"))
+  lt$year*12 + lt$mon
+} 
+
+# compute a month difference as a difference between two months
+mondf <- function(d1, d2) {
+  monnb(d1) - monnb(d2)
+}
+
+
+hol1$idade.parto <- mondf(d2 = hol1$data.nascimento, d1 = hol1$data.parto)
+
+
+# Variável ordem do parto tem varias inconsistências, tentando corrigir pelo menos a maioria delas
+
+hol2 <- hol1 %>%
+  arrange(id.animal, idade.parto) %>%
+  group_by(id.animal) %>%
+  mutate(ordem.parto.ok = ifelse(is.na(lag(ordem.parto)) == TRUE, #| status.do.nascimento.da.cria == "ABORTO",
+                                 ordem.parto,
+                                 ifelse((abs(idade.parto) - abs(lag(idade.parto))) < 28 & (ordem.parto - lag(ordem.parto)) != 1,
+                                        NA, ordem.parto))) %>% 
+  mutate(ordem.parto.ok = ifelse(is.na(ordem.parto.ok) == TRUE,
+                                 lag(ordem.parto.ok)+1, ordem.parto.ok)) %>%
+  mutate(ordem.parto.ok = ifelse(is.na(ordem.parto.ok) == TRUE,
+                                 lag(ordem.parto.ok)+1, ordem.parto.ok)) %>%
+  mutate(ordem.parto.ok = ifelse(is.na(ordem.parto.ok) == TRUE,
+                                 lag(ordem.parto.ok)+1, ordem.parto.ok)) %>%
+  mutate(ordem.parto.ok = ifelse(is.na(ordem.parto.ok) == TRUE,
+                                 lag(ordem.parto.ok)+1, ordem.parto.ok)) %>%
+  mutate(ordem.parto.ok = ifelse(is.na(ordem.parto.ok) == TRUE,
+                                 lag(ordem.parto.ok)+1, ordem.parto.ok)) %>%
+  ungroup()
+
+
+# A maioria das inconsistências foram corrigidas!!! :D :D :D
+
+
+# Dados descritivos iniciais para o Material e Métodos
+hol2 %>% 
+  filter(raca == "HOLANDES") %>% 
+  summarise(animal = n_distinct(id.animal),
+            herd = n_distinct(cliente))
+
+hol2 %>% 
+  filter(raca == "HOLANDES") %>% 
+  select(ano.parto) %>% 
+  summary()
+
+
+# Preparação dos dados
+
+hol3 <- hol2 %>%
+  
+  
+  # Mantendo somente observações de animais da raça Holandesa
+  filter(raca == "HOLANDES") %>% 
+  
+  
+  # Removendo entradas duplicadas com base no ID Animal, ano e estação do parto (ordem do parto não é 100%)
+  distinct(id.animal, ano.parto, estacao.parto, .keep_all = TRUE) %>% 
+  
+  # Removing observação onde a idade do parto está fora dos intervalos estabelecidos
+  mutate(remove = ifelse(ordem.parto.ok == 1 & !(idade.parto %in% c(20:40)), "yes",
+                         ifelse(ordem.parto.ok == 2 & !(idade.parto %in% c(29:60)), "yes",
+                                ifelse(ordem.parto.ok == 3 & !(idade.parto %in% c(38:70)), "yes",
+                                       ifelse(ordem.parto.ok == 4 & !(idade.parto %in% c(47:90)), "yes", 
+                                              ifelse(ordem.parto.ok == 5 & !(idade.parto %in% c(60:100)), "yes",
+                                                     ifelse(ordem.parto.ok > 5 & !(idade.parto %in% c(70:120)), "yes","no")
+                                              )))))) %>% 
+  filter(remove == "no") %>% 
+  
+  # Agrupando paridades maiores ou iguais que 5
+  mutate(ordem.parto.stats = factor(ifelse(ordem.parto > 5,
+                                           "6+", ordem.parto),
+                                    levels = c("1", "2", "3", "4", "5", "6+"))) %>%
+  
+  # Mantendo apenas lactações de no máximo 500 dias
+  filter(diaslactacao %in% c(1:500)) %>% 
+  
+  # Removendo NAs and Zeros on fat and protein production
+  filter(!is.na(prodgord305dias),
+         prodgord305dias !=0,
+         !is.na(prodprot305dias),
+         prodprot305dias !=0) %>% 
+  
+  # Getting month of calving
+  mutate(mes.parto = lubridate::month(data.parto)) %>% 
+  
+  
+  
+  # Calculando a relação gordura:proteína
+  mutate(ftp = prodgord305dias/prodprot305dias) %>% 
+  
+  # Identificando e removendo outliers
+  filter(ftp >= quantile(ftp, 0.01) & ftp <= quantile(ftp, 0.99)) %>%
+  
+  
+  # Keeping herds with at least 5 observations for the random effect
+  group_by(cliente, estacao.parto) %>%
+  mutate(n_obs = n()) %>%
+  ungroup() %>% 
+  filter(n_obs >= 5) %>% 
+  
+  
+  # Keeping only observations from 2000 to 2016 because the other years do
+  # not have observations on all months
+  filter(ano.parto %in% c(2000:2016)) %>% 
+  
+  # Creating position variable to evaluate correlation structures
+  # The position variable defines the indices of the correlation parameters
+  # for each observation and must evaluate to an integer vector, 
+  # with nonrepeated values per group, such that its unique values, when sorted,
+  # form a sequence of consecutive integers
+  # 
+  # Cliente is the group (random effect) evaluated in this study
+  arrange(ano.parto, mes.parto, cliente, ordem.parto.ok, data.parto) %>% 
+  group_by(cliente) %>% 
+  mutate(timePos = row_number()) %>% 
+  ungroup()
+
+
+# Análise exploratória ####
+# Dados descritivos sobre o arquivo que foi analisado
+
+hol3 %>% 
+  nrow()
+
+hol3 %>% 
+  summarise(animal = n_distinct(id.animal),
+            herd = n_distinct(cliente))
+
+hol3 %>% 
+  select(ano.parto) %>% 
+  summary()
+
+
+ggplot(hol3, 
+       aes(x = ftp)) +
+  facet_wrap(~ ano.parto,
+             scales = "free") +
+  geom_histogram()
+
+
+
+
+ggplot(hol3, 
+       aes(x = ftp)) +
+  facet_wrap(~ mes.parto) +
+  geom_histogram()
+
+set.seed(1801)
+ggplot(hol3 %>%
+         mutate(ano.parto = as.factor(ano.parto),
+                mes.parto = as.factor(mes.parto)) %>% 
+         filter(cliente %in% sample(unique(cliente),5)), 
+       aes(y = ftp,
+           x = mes.parto,
+           color = cliente)) +
+  geom_boxplot(show.legend = FALSE)
+
+
+hol3 %>% 
+  group_by(ordem.parto.stats, ano.parto, mes.parto) %>% 
+  add_count() %>% 
+  distinct(ano.parto, mes.parto, ordem.parto.stats, n) %>% 
+  arrange(ano.parto, mes.parto, ordem.parto.stats) %>% 
+  View()
+
+# Não tenho observações de todas as lactações terminando em todas as combinações de ano e mês
+# Não vai ser possível colocar essa interação tripla no modelo
+
+
+
+# Modeling ####
+
+options(contrasts = c("contr.sum", "contr.poly"))
+model1 <- lme(ftp ~ diaslactacao + ordem.parto.stats + ano.parto + mes.parto +
+                ordem.parto.stats * ano.parto + ordem.parto.stats * mes.parto +
+                ano.parto * mes.parto,
+              random = ~ 1|cliente,
+              data = hol3 %>%
+                mutate(ano.parto = as.factor(ano.parto),
+                       mes.parto = as.factor(mes.parto)))
