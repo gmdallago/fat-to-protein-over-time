@@ -261,7 +261,8 @@ ggplot(hol3 %>%
 # Modeling ####
 
 options(contrasts = c("contr.sum", "contr.poly"))
-model1 <- lme(ftp ~ diaslactacao + ordem.parto.stats + ano.fim.lacta + mes.fim.lacta,
+model1 <- lme(ftp ~ diaslactacao + I(diaslactacao^2) + ordem.parto.stats + 
+                ano.fim.lacta + mes.fim.lacta,
               random = ~ 1|cliente,
               data = hol3 %>%
                 mutate(ano.fim.lacta = as.factor(ano.fim.lacta),
@@ -272,7 +273,8 @@ model1 <- lme(ftp ~ diaslactacao + ordem.parto.stats + ano.fim.lacta + mes.fim.l
 options(contrasts = c("contr.sum", "contr.poly"))
 
 
-model1.ar1cor <- lme(ftp ~ diaslactacao + ordem.parto.stats + ano.fim.lacta + mes.fim.lacta,
+model1.ar1cor <- lme(ftp ~ diaslactacao + I(diaslactacao^2) + ordem.parto.stats + 
+                       ano.fim.lacta + mes.fim.lacta,
                      random = ~ 1|cliente,
                      data = hol3 %>%
                        mutate(ano.fim.lacta = as.factor(ano.fim.lacta),
@@ -280,7 +282,8 @@ model1.ar1cor <- lme(ftp ~ diaslactacao + ordem.parto.stats + ano.fim.lacta + me
                      correlation = corAR1(form = ~ timePos))
 
 
-model1.CompSymcor <- lme(ftp ~ diaslactacao + ordem.parto.stats + ano.fim.lacta + mes.fim.lacta,
+model1.CompSymcor <- lme(ftp ~ diaslactacao + I(diaslactacao^2) + ordem.parto.stats + 
+                           ano.fim.lacta + mes.fim.lacta,
                          random = ~ 1|cliente,
                          data = hol3 %>%
                            mutate(ano.fim.lacta = as.factor(ano.fim.lacta),
@@ -450,9 +453,6 @@ ggsave(filename = paste(Sys.Date(), "Ano.jpeg", sep = "_"),
 # Paridade
 emmeans(model1.ar1cor, ~ ordem.parto.stats)
 
-contrast(emmeans(model1.ar1cor, pairwise ~ ordem.parto.stats)[[1]], 
-         "poly")
-
 multcomp::cld(emmeans(model1.ar1cor, ~ ordem.parto.stats),
               alpha = 0.05,
               Letters = letters,
@@ -468,8 +468,8 @@ ggplot(emmeans(model1.ar1cor, ~ ordem.parto.stats) %>%
                 width = 0.25, size = 0.25, color = "gray33") +
   geom_point(size = 2.5, show.legend = FALSE,
              color = "black") +
-  scale_y_continuous(limits = c(1.08, 1.16),
-                     breaks = seq(1.08, 1.16, 0.02),
+  scale_y_continuous(limits = c(1.07, 1.15),
+                     breaks = seq(1.07, 1.15, 0.01),
                      expand = expansion(mult = 0, add = 0)) +
   geom_text(aes(label = labels,
                 y = upper.CL),
